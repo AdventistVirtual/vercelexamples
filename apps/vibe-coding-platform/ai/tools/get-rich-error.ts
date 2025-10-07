@@ -1,5 +1,4 @@
-import { APIError } from '@vercel/sandbox/dist/api-client/api-error'
-
+/* Removed Vercel APIError import; using generic error parsing */
 interface Params {
   args?: Record<string, unknown>
   action: string
@@ -28,16 +27,17 @@ function getErrorFields(error: unknown) {
       message: String(error),
       json: error,
     }
-  } else if (error instanceof APIError) {
-    return {
-      message: error.message,
-      json: error.json,
-      text: error.text,
-    }
   } else {
-    return {
+    // Generic error parsing compatible with E2B responses
+    const anyErr = error as any
+    const json = anyErr?.json ?? anyErr
+    const text = typeof anyErr?.text === 'string' ? anyErr.text : undefined
+
+    const result: { message: string; json: unknown; text?: string } = {
       message: error.message,
-      json: error,
+      json,
     }
+    if (text) result.text = text
+    return result
   }
 }

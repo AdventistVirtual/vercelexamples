@@ -146,6 +146,16 @@ export function useDataStateMapper() {
             command: data.data.command,
             args: data.data.args,
           })
+        } else if (data.data.status === 'done') {
+          const cmdId = data.data.commandId ?? crypto.randomUUID()
+          upsertCommand({
+            background: false,
+            sandboxId: data.data.sandboxId,
+            cmdId,
+            command: data.data.command,
+            args: data.data.args,
+            exitCode: data.data.exitCode ?? 0,
+          })
         }
         break
       case 'data-get-sandbox-url':

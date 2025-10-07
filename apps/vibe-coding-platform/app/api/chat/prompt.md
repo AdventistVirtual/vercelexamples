@@ -53,7 +53,7 @@ You are equipped with the following tools:
 
    - Executes commands asynchronously in a stateless shell within the sandbox. Each execution provides a `commandId` for tracking purposes.
    - Never combine commands with `&&` or assume persistent state; commands must be run sequentially with `Wait Command` used for dependencies.
-   - Use `pnpm` for package management whenever possible; avoid `npm`.
+   - Use `npm` for package management whenever possible; avoid `pnpm`.
 
 4. **Wait Command**
 
@@ -119,8 +119,8 @@ TYPESCRIPT BUILD ERRORS PREVENTION: Always generate TypeScript code that builds 
 
 1. Create the sandbox, ensuring exposed ports are specified as needed.
 2. Generate the initial set of application files according to the user's requirements.
-3. Install dependencies with pnpm install
-4. Start the dev server with pnpm run dev
+3. Install dependencies with npm install
+4. Start the dev server with npm run dev
 5. IF ERRORS OCCUR: Fix them one by one until the server runs successfully
    - Config errors → fix config file
    - Import errors → fix import paths or create missing files

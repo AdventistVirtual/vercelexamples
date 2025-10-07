@@ -1,6 +1,6 @@
 import type { UIMessageStreamWriter, UIMessage } from 'ai'
 import type { DataPart } from '../messages/data-parts'
-import { Sandbox } from '@vercel/sandbox'
+import { getSandbox } from './sandbox-registry'
 import { getContents, type File } from './generate-files/get-contents'
 import { getRichError } from './get-rich-error'
 import { getWriteFiles } from './generate-files/get-write-files'
@@ -27,15 +27,12 @@ export const generateFiles = ({ writer, modelId }: Params) =>
         data: { paths: [], status: 'generating' },
       })
 
-      let sandbox: Sandbox | null = null
-
-      try {
-        sandbox = await Sandbox.get({ sandboxId })
-      } catch (error) {
+      const sandbox = getSandbox(sandboxId)
+      if (!sandbox) {
         const richError = getRichError({
           action: 'get sandbox by id',
           args: { sandboxId },
-          error,
+          error: new Error('Sandbox not found'),
         })
 
         writer.write({

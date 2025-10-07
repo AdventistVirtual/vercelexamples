@@ -1,11 +1,13 @@
 import type { DataPart } from '../../messages/data-parts'
 import type { File } from './get-contents'
-import type { Sandbox } from '@vercel/sandbox'
 import type { UIMessageStreamWriter, UIMessage } from 'ai'
 import { getRichError } from '../get-rich-error'
 
 interface Params {
-  sandbox: Sandbox
+  // E2B Sandbox instance
+  sandbox: {
+    runCode: (code: string, opts?: { language?: string }) => Promise<unknown>
+  }
   toolCallId: string
   writer: UIMessageStreamWriter<UIMessage<never, DataPart>>
 }
@@ -24,16 +26,29 @@ export function getWriteFiles({ sandbox, toolCallId, writer }: Params) {
     })
 
     try {
-      await sandbox.writeFiles(
-        params.files.map((file) => ({
-          content: Buffer.from(file.content, 'utf8'),
-          path: file.path,
-        }))
-      )
+      // Build a single Python script to write multiple files efficiently
+      const payload = params.files.map((file) => ({
+        path: file.path,
+        b64: Buffer.from(file.content, 'utf8').toString('base64'),
+      }))
+      const py = `
+import os, base64
+files = ${JSON.stringify(payload)}
+for f in files:
+  p = f["path"]
+  d = os.path.dirname(p)
+  if d:
+    os.makedirs(d, exist_ok=True)
+  with open(p, "wb") as out:
+    out.write(base64.b64decode(f["b64"]))
+print("written:" + ",".join([f["path"] for f in files]))
+`.trim()
+
+      await sandbox.runCode(py, { language: 'python' })
     } catch (error) {
       const richError = getRichError({
         action: 'write files to sandbox',
-        args: params,
+        args: { paths: params.paths },
         error,
       })
 
