@@ -67,9 +67,9 @@ export const ConversationScrollButton = ({
  */
 export function AutoScroll({ active, tick }: { active: boolean; tick: number }) {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext()
-  const rafId = useRef<number | null>(null)
 
-  // Immediate double-RAF scroll when new content arrives.
+  // Scroll only when new content arrives and the user is at the bottom.
+  // Double-RAF avoids sync layout thrash during streaming updates.
   useEffect(() => {
     if (!active || !isAtBottom) return
     const id1 = requestAnimationFrame(() => {
@@ -83,26 +83,6 @@ export function AutoScroll({ active, tick }: { active: boolean; tick: number }) 
     })
     return () => cancelAnimationFrame(id1)
   }, [active, tick, isAtBottom, scrollToBottom])
-
-  // Continuous lightweight follow while streaming (only if user stays at bottom).
-  useEffect(() => {
-    if (!active) return
-    const loop = () => {
-      if (isAtBottom) {
-        try {
-          scrollToBottom()
-        } catch {
-          // no-op
-        }
-      }
-      rafId.current = requestAnimationFrame(loop)
-    }
-    rafId.current = requestAnimationFrame(loop)
-    return () => {
-      if (rafId.current != null) cancelAnimationFrame(rafId.current)
-      rafId.current = null
-    }
-  }, [active, isAtBottom, scrollToBottom])
 
   return null
 }

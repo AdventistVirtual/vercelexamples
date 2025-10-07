@@ -49,16 +49,18 @@ export function Chat({ className }: Props) {
   }, [status, setChatStatus])
 
   // Auto-scroll tick: increases with visible content growth during streaming
+  // Tick depends only on latest message content to avoid O(n) backlog scans.
   const scrollTick = useMemo(() => {
+    const last = messages[messages.length - 1]
+    if (!last) return 0
     let sum = 0
-    for (const m of messages) {
-      const parts: any[] = (m as any).parts || []
-      for (const p of parts) {
-        const t = (p as any)?.text
-        if (typeof t === 'string') sum += t.length
-      }
+    const parts: any[] = (last as any).parts || []
+    for (const p of parts) {
+      const t = (p as any)?.text
+      if (typeof t === 'string') sum += t.length
     }
-    return sum
+    // Include message count to ensure tick changes when a new message is added.
+    return sum + messages.length * 1000
   }, [messages])
 
   return (
