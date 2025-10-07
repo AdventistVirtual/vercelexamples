@@ -8,6 +8,7 @@ import {
   Conversation,
   ConversationContent,
   ConversationScrollButton,
+  AutoScroll,
 } from '@/components/ai-elements/conversation'
 import { Input } from '@/components/ui/input'
 import { Message } from '@/components/chat/message'
@@ -16,7 +17,7 @@ import { Panel, PanelHeader } from '@/components/panels/panels'
 import { Settings } from '@/components/settings/settings'
 import { useChat } from '@ai-sdk/react'
 import { useLocalStorageValue } from '@/lib/use-local-storage-value'
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useSharedChatContext } from '@/lib/chat-context'
 import { useSettings } from '@/components/settings/use-settings'
 import { useSandboxStore } from './state'
@@ -46,6 +47,19 @@ export function Chat({ className }: Props) {
   useEffect(() => {
     setChatStatus(status)
   }, [status, setChatStatus])
+
+  // Auto-scroll tick: increases with visible content growth during streaming
+  const scrollTick = useMemo(() => {
+    let sum = 0
+    for (const m of messages) {
+      const parts: any[] = (m as any).parts || []
+      for (const p of parts) {
+        const t = (p as any)?.text
+        if (typeof t === 'string') sum += t.length
+      }
+    }
+    return sum
+  }, [messages])
 
   return (
     <Panel className={className}>
@@ -79,6 +93,7 @@ export function Chat({ className }: Props) {
         </div>
       ) : (
         <Conversation className="relative w-full">
+          <AutoScroll active={status === 'streaming'} tick={scrollTick} />
           <ConversationContent className="space-y-4">
             {messages.map((message) => (
               <Message key={message.id} message={message} />

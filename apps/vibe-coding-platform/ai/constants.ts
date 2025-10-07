@@ -1,26 +1,12 @@
-import { type GatewayModelId } from '@ai-sdk/gateway'
-
 export enum Models {
-  AmazonNovaPro = 'amazon/nova-pro',
-  AnthropicClaude4Sonnet = 'anthropic/claude-4-sonnet',
-  AnthropicClaude45Sonnet = 'anthropic/claude-sonnet-4.5',
-  GoogleGeminiFlash = 'google/gemini-2.5-flash',
-  MoonshotKimiK2 = 'moonshotai/kimi-k2',
+  // Optional special-case for gating reasoning UI; won't be listed unless your API provides this ID.
   OpenAIGPT5 = 'gpt-5',
-  XaiGrok3Fast = 'xai/grok-3-fast',
 }
 
-export const DEFAULT_MODEL = Models.AnthropicClaude45Sonnet
-
-export const SUPPORTED_MODELS: GatewayModelId[] = [
-  Models.AmazonNovaPro,
-  Models.AnthropicClaude4Sonnet,
-  Models.AnthropicClaude45Sonnet,
-  Models.GoogleGeminiFlash,
-  Models.MoonshotKimiK2,
-  Models.OpenAIGPT5,
-  Models.XaiGrok3Fast,
-]
+// Default model for the app; can be overridden at build/runtime via Next public env.
+// Example: NEXT_PUBLIC_OPENAI_DEFAULT_MODEL=gpt-4o-mini
+export const DEFAULT_MODEL =
+  process.env.NEXT_PUBLIC_OPENAI_DEFAULT_MODEL || 'gpt-4o-mini'
 
 export const TEST_PROMPTS = [
   'Generate a Next.js app that allows to list and search Pokemons',

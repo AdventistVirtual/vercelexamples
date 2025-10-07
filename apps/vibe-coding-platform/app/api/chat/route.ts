@@ -28,20 +28,23 @@ export async function POST(req: Request) {
   const [models, { messages, modelId = DEFAULT_MODEL, reasoningEffort }] =
     await Promise.all([getAvailableModels(), req.json() as Promise<BodyData>])
 
-  const model = models.find((model) => model.id === modelId)
-  if (!model) {
+  const selectedModel =
+    models.find((model: { id: string; name: string }) => model.id === modelId) ??
+    models[0]
+  if (!selectedModel) {
     return NextResponse.json(
-      { error: `Model ${modelId} not found.` },
-      { status: 400 }
+      { error: `No models available. Check OPENAI_API_KEY/OPENAI_BASE_URL.` },
+      { status: 500 }
     )
   }
+  const effectiveModelId = selectedModel.id
 
   return createUIMessageStreamResponse({
     stream: createUIMessageStream({
       originalMessages: messages,
       execute: ({ writer }) => {
         const result = streamText({
-          ...getModelOptions(modelId, { reasoningEffort }),
+          ...getModelOptions(effectiveModelId, { reasoningEffort }),
           system: prompt,
           messages: convertToModelMessages(
             messages.map((message) => {
@@ -65,7 +68,7 @@ export async function POST(req: Request) {
             })
           ),
           stopWhen: stepCountIs(20),
-          tools: tools({ modelId, writer }),
+          tools: tools({ modelId: effectiveModelId, writer }),
           onError: (error) => {
             console.error('Error communicating with AI')
             console.error(JSON.stringify(error, null, 2))
@@ -77,7 +80,7 @@ export async function POST(req: Request) {
             sendReasoning: true,
             sendStart: false,
             messageMetadata: () => ({
-              model: model.name,
+              model: selectedModel.name,
             }),
           })
         )

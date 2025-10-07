@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button'
 import { ArrowDownIcon } from 'lucide-react'
 import type { ComponentProps } from 'react'
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom'
 import { cn } from '@/lib/utils'
 
@@ -12,8 +12,8 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
     className={cn('relative flex-1 overflow-y-auto', className)}
-    initial="smooth"
-    resize="smooth"
+    initial="auto"
+    resize="auto"
     role="log"
     {...props}
   />
@@ -59,4 +59,50 @@ export const ConversationScrollButton = ({
       </Button>
     )
   )
+}
+
+/**
+ * Auto-scrolls to bottom while active is true and the user is currently at the bottom.
+ * Usage: render inside <Conversation> and pass a changing tick (e.g. message/part count).
+ */
+export function AutoScroll({ active, tick }: { active: boolean; tick: number }) {
+  const { isAtBottom, scrollToBottom } = useStickToBottomContext()
+  const rafId = useRef<number | null>(null)
+
+  // Immediate double-RAF scroll when new content arrives.
+  useEffect(() => {
+    if (!active || !isAtBottom) return
+    const id1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try {
+          scrollToBottom()
+        } catch {
+          // no-op
+        }
+      })
+    })
+    return () => cancelAnimationFrame(id1)
+  }, [active, tick, isAtBottom, scrollToBottom])
+
+  // Continuous lightweight follow while streaming (only if user stays at bottom).
+  useEffect(() => {
+    if (!active) return
+    const loop = () => {
+      if (isAtBottom) {
+        try {
+          scrollToBottom()
+        } catch {
+          // no-op
+        }
+      }
+      rafId.current = requestAnimationFrame(loop)
+    }
+    rafId.current = requestAnimationFrame(loop)
+    return () => {
+      if (rafId.current != null) cancelAnimationFrame(rafId.current)
+      rafId.current = null
+    }
+  }, [active, isAtBottom, scrollToBottom])
+
+  return null
 }
