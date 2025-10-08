@@ -10,6 +10,8 @@ import {
   createStream,
   finishStream,
   getStream,
+  beginInstallGate,
+  waitForInstallIdle,
 } from './command-registry'
 
 interface Params {
@@ -62,6 +64,39 @@ function isPotentiallyLongRunning(command: string, args: string[]) {
   }
 
   return false
+}
+
+function classifyCommandKind(
+  command: string,
+  args: string[]
+): 'install' | 'dev' | 'normal' {
+  const c = (command || '').toLowerCase()
+  const a0 = (args[0] || '').toLowerCase()
+  const a1 = (args[1] || '').toLowerCase()
+
+  const devAliases = new Set(['dev', 'start', 'serve', 'preview'])
+
+  // Install commands
+  if ((c === 'npm' || c === 'yarn') && (a0 === 'install' || a0 === 'ci')) {
+    return 'install'
+  }
+
+  // Dev servers via npm scripts
+  if (c === 'npm' || c === 'yarn') {
+    if ((a0 === 'run' && devAliases.has(a1)) || devAliases.has(a0)) {
+      return 'dev'
+    }
+  }
+
+  // Common npx starters
+  if (c === 'npx') {
+    const starters = new Set(['next', 'vite', 'vercel'])
+    if (starters.has(a0) && devAliases.has(a1)) {
+      return 'dev'
+    }
+  }
+
+  return 'normal'
 }
 
 function toShellString(cmd: string, args: string[], sudo?: boolean) {
@@ -141,9 +176,18 @@ export const runCommand = ({ writer }: Params) =>
         if (!effectiveWait) {
           const startedAt = Date.now()
           const commandId = crypto.randomUUID()
+          const kind = classifyCommandKind(normCommand, normArgs)
 
           // Initialize stream BEFORE starting the job to avoid callback race on first chunk
-          createStream(sandboxId, commandId, startedAt)
+          createStream(sandboxId, commandId, startedAt, undefined, kind)
+
+          // If an install is in progress, block subsequent commands until it finishes
+          if (kind !== 'install') {
+            await waitForInstallIdle(sandboxId)
+          } else {
+            // Mark this command as the active install gate
+            beginInstallGate(sandboxId, commandId)
+          }
 
           // Start the background job with streaming
           // Note: E2B commands.run accepts a single shell string; we pass background and streaming callbacks
@@ -204,7 +248,8 @@ export const runCommand = ({ writer }: Params) =>
         // Foreground: stream while awaiting completion
         const startedAt = Date.now()
         const commandId = crypto.randomUUID()
-        createStream(sandboxId, commandId, startedAt)
+        const kind = classifyCommandKind(normCommand, normArgs)
+        createStream(sandboxId, commandId, startedAt, undefined, kind)
 
         writer.write({
           id: toolCallId,
@@ -217,6 +262,12 @@ export const runCommand = ({ writer }: Params) =>
             status: 'waiting',
           },
         })
+
+        // Serialize foreground execution behind any active install
+        await waitForInstallIdle(sandboxId)
+          if (kind === 'install') {
+            beginInstallGate(sandboxId, commandId)
+          }
 
         const result = await (sandbox as any).commands.run(cmdLine, {
           onStdout: (data: any) => {

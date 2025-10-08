@@ -21,6 +21,7 @@ type CommandStream = {
  stdoutBuf: string
  stderrBuf: string
  handle?: CommandHandleRef
+ kind?: 'install' | 'dev' | 'normal'
 }
 
 const registry = new Map<string, Map<string, CommandStream>>()
@@ -35,13 +36,62 @@ function ensureSandboxMap(sandboxId: string) {
 }
 
 /**
+ * Per-sandbox install gate to serialize commands until an install finishes.
+ */
+const installGates = new Map<string, { activeCmdId?: string; waiters: Set<() => void>; pending: boolean }>()
+
+export function beginInstallGate(sandboxId: string, cmdId: string) {
+ let gate = installGates.get(sandboxId)
+ if (!gate) {
+   gate = { activeCmdId: cmdId, waiters: new Set(), pending: true }
+   installGates.set(sandboxId, gate)
+ } else {
+   gate.activeCmdId = cmdId
+   gate.pending = true
+ }
+}
+
+export function setInstallPending(sandboxId: string, pending: boolean) {
+ let gate = installGates.get(sandboxId)
+ if (!gate) {
+   gate = { activeCmdId: undefined, waiters: new Set(), pending }
+   installGates.set(sandboxId, gate)
+ } else {
+   gate.pending = pending
+ }
+}
+
+export async function waitForInstallIdle(sandboxId: string): Promise<void> {
+ const gate = installGates.get(sandboxId)
+ if (!gate?.activeCmdId && !gate?.pending) return
+ await new Promise<void>((resolve) => {
+   gate!.waiters.add(resolve)
+ })
+}
+
+export function endInstallGate(sandboxId: string, cmdId: string) {
+ const gate = installGates.get(sandboxId)
+ if (!gate?.activeCmdId) return
+ if (gate.activeCmdId !== cmdId) return
+ gate.activeCmdId = undefined
+ gate.pending = false
+ for (const resolve of gate.waiters) {
+   try {
+     resolve()
+   } catch {}
+ }
+ gate.waiters.clear()
+}
+
+/**
 * Initialize a command stream entry.
 */
 export function createStream(
  sandboxId: string,
  cmdId: string,
  startedAt: number,
- handle?: CommandHandleRef
+ handle?: CommandHandleRef,
+ kind?: 'install' | 'dev' | 'normal'
 ) {
  const sandboxMap = ensureSandboxMap(sandboxId)
  sandboxMap.set(cmdId, {
@@ -52,6 +102,7 @@ export function createStream(
    stdoutBuf: '',
    stderrBuf: '',
    handle,
+   kind,
  })
 }
 
@@ -131,6 +182,10 @@ export function finishStream(sandboxId: string, cmdId: string, exitCode?: number
  flushBuffers(sandboxId, cmdId)
  stream.done = true
  stream.exitCode = exitCode
+ // Clear install gate if this stream was an install
+ if (stream.kind === 'install') {
+   endInstallGate(sandboxId, cmdId)
+ }
 }
 
 /**
@@ -176,6 +231,9 @@ export async function killCommand(sandboxId: string, cmdId: string): Promise<voi
    await stream.handle.kill()
  } catch {
    // swallow kill errors
+ } finally {
+   // Ensure stream finalized; will also release install gate if applicable
+   finishStream(sandboxId, cmdId, undefined)
  }
 }
 
