@@ -1,15 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import {
-  getStatus,
-  getStream,
-} from '../../../../../../ai/tools/command-registry'
+import { getStream, killCommand } from '../../../../../../../ai/tools/command-registry'
 
 interface Params {
   sandboxId: string
   cmdId: string
 }
 
-export async function GET(
+export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<Params> }
 ) {
@@ -23,12 +20,13 @@ export async function GET(
     )
   }
 
-  const status = getStatus(sandboxId, cmdId)
-
-  return NextResponse.json({
-    sandboxId,
-    cmdId,
-    startedAt: status?.startedAt ?? Date.now(),
-    exitCode: status?.exitCode,
-  })
+  try {
+    await killCommand(sandboxId, cmdId)
+    return NextResponse.json({ ok: true, sandboxId, cmdId })
+  } catch (e: any) {
+    return NextResponse.json(
+      { ok: false, error: e?.message ?? 'Failed to kill command' },
+      { status: 500 }
+    )
+  }
 }

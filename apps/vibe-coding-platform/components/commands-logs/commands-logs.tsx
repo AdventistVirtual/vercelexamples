@@ -5,6 +5,7 @@ import { Panel, PanelHeader } from '@/components/panels/panels'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { SquareChevronRight } from 'lucide-react'
 import { useEffect, useRef } from 'react'
+import { Button } from '@/components/ui/button'
 
 interface Props {
   className?: string
@@ -17,6 +18,17 @@ export function CommandsLogs(props: Props) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [props.commands])
+
+  async function killCommand(sandboxId: string, cmdId: string) {
+    try {
+      await fetch(`/api/sandboxes/${sandboxId}/cmds/${cmdId}/kill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch {
+      // ignore UI kill errors
+    }
+  }
 
   return (
     <Panel className={props.className}>
@@ -42,13 +54,41 @@ export function CommandsLogs(props: Props) {
 
               const line = `${command.command} ${command.args.join(' ')}`
               const body = command.logs?.map((log) => log.data).join('') || ''
+
+              const running = typeof command.exitCode === 'undefined'
+              const canCancel = command.background && running
+
               return (
-                <pre
-                  key={command.cmdId}
-                  className="whitespace-pre-wrap font-mono text-sm"
-                >
-                  {`[${date}] ${line}\n${body}`}
-                </pre>
+                <div key={command.cmdId} className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-xs text-muted-foreground">
+                      [{date}] {line}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      {running && (
+                        <span className="font-mono text-xs text-yellow-600">
+                          running
+                        </span>
+                      )}
+                      {!running && (
+                        <span className="font-mono text-xs text-green-600">
+                          exit {command.exitCode ?? 0}
+                        </span>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!canCancel}
+                        onClick={() => killCommand(command.sandboxId, command.cmdId)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                  <pre className="whitespace-pre-wrap font-mono text-sm">
+                    {body}
+                  </pre>
+                </div>
               )
             })}
           </div>

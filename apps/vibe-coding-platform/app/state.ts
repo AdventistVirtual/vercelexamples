@@ -137,7 +137,9 @@ export function useDataStateMapper() {
       case 'data-run-command':
         if (
           data.data.commandId &&
-          (data.data.status === 'executing' || data.data.status === 'running')
+          (data.data.status === 'executing' ||
+            data.data.status === 'running' ||
+            data.data.status === 'waiting')
         ) {
           upsertCommand({
             background: data.data.status === 'running',

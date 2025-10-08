@@ -5,76 +5,17 @@ import { getRichError } from './get-rich-error'
 import { tool } from 'ai'
 import description from './run-command.md'
 import z from 'zod/v3'
+import {
+  appendChunk,
+  createStream,
+  finishStream,
+  getStream,
+} from './command-registry'
 
 interface Params {
   writer: UIMessageStreamWriter<UIMessage<never, DataPart>>
 }
 
-function buildForegroundPython(command: string, args: string[], sudo?: boolean) {
-  const cmdArray = [sudo ? 'sudo' : undefined, command, ...args].filter(Boolean)
-  const py = `
-import subprocess, json
-cmd = ${JSON.stringify(cmdArray)}
-res = subprocess.run(cmd, capture_output=True, text=True)
-print(json.dumps({"exitCode": res.returncode, "stdout": res.stdout, "stderr": res.stderr}))
-`.trim()
-  return py
-}
-
-function buildBackgroundPython(command: string, args: string[], sudo?: boolean) {
-  const cmdArray = [sudo ? 'sudo' : undefined, command, ...args].filter(Boolean)
-  const py = `
-import subprocess, json, os, uuid, time, threading
-logdir = "/tmp/e2b_cmd_logs"
-os.makedirs(logdir, exist_ok=True)
-cmd = ${JSON.stringify(cmdArray)}
-cmd_id = str(uuid.uuid4())
-out_path = os.path.join(logdir, cmd_id + ".out")
-err_path = os.path.join(logdir, cmd_id + ".err")
-code_path = os.path.join(logdir, cmd_id + ".code")
-pid_path = os.path.join(logdir, cmd_id + ".pid")
-start_path = os.path.join(logdir, cmd_id + ".start")
-started_at = int(time.time() * 1000)
-p = subprocess.Popen(cmd, stdout=open(out_path, "ab"), stderr=open(err_path, "ab"))
-# Persist PID and start time for status queries
-with open(pid_path, "w") as f:
-  f.write(str(p.pid))
-with open(start_path, "w") as f:
-  f.write(str(started_at))
-# Background watcher to write exit code when finished
-def _wait_and_write():
-  rc = p.wait()
-  with open(code_path, "w") as f:
-    f.write(str(rc))
-threading.Thread(target=_wait_and_write, daemon=True).start()
-print(json.dumps({"commandId": cmd_id}))
-`.trim()
-  return py
-}
-
-function parseRunCodeJSON(execution: any): any {
-  try {
-    const stdoutArr = execution?.stdout ?? execution?.execution?.stdout ?? []
-    let combined = ''
-    if (Array.isArray(stdoutArr)) {
-      combined = stdoutArr
-        .map((m: any) => {
-          if (typeof m === 'string') return m
-          if (typeof m?.message === 'string') return m.message
-          if (typeof m?.content === 'string') return m.content
-          if (Array.isArray(m?.lines)) return m.lines.join('\n')
-          return ''
-        })
-        .join('')
-    } else if (typeof stdoutArr === 'string') {
-      combined = stdoutArr
-    }
-    return JSON.parse(combined.trim())
-  } catch {
-    return null
-  }
-}
- 
 function normalizePackageManager(command: string, args: string[]) {
   // Enforce npm usage in sandbox; map pnpm->npm and pnpm dlx->npx
   const out = { command, args: [...args] }
@@ -95,7 +36,7 @@ function normalizePackageManager(command: string, args: string[]) {
  *
  * Examples:
  * - npm install / npm ci
- * - npm run dev / npm start / npm run start / npm run serve / npm run preview
+ * - npm run dev / npm start / npm run serve / npm run preview
  * - npx next dev / npx vite dev / npx vercel dev
  */
 function isPotentiallyLongRunning(command: string, args: string[]) {
@@ -122,7 +63,12 @@ function isPotentiallyLongRunning(command: string, args: string[]) {
 
   return false
 }
- 
+
+function toShellString(cmd: string, args: string[], sudo?: boolean) {
+  const parts = [sudo ? 'sudo' : '', cmd, ...args].filter(Boolean)
+  return parts.join(' ')
+}
+
 export const runCommand = ({ writer }: Params) =>
   tool({
     description,
@@ -159,6 +105,8 @@ export const runCommand = ({ writer }: Params) =>
       const forceBackground = isPotentiallyLongRunning(normCommand, normArgs)
       const effectiveWait = forceBackground ? false : wait
       const bgSuffix = forceBackground ? ' (forced to run in background due to long-running command)' : ''
+      const cmdLine = toShellString(normCommand, normArgs, sudo)
+
       writer.write({
         id: toolCallId,
         type: 'data-run-command',
@@ -189,12 +137,34 @@ export const runCommand = ({ writer }: Params) =>
       }
 
       try {
+        // Background: non-blocking, attach streaming callbacks and expose kill()
         if (!effectiveWait) {
-          const py = buildBackgroundPython(normCommand, normArgs, sudo)
-          const result = await (sandbox as any).runCode(py, { language: 'python' })
-          const parsed = parseRunCodeJSON(result)
-          const commandId = parsed?.commandId ?? String(Date.now())
- 
+          const startedAt = Date.now()
+          const commandId = crypto.randomUUID()
+
+          // Initialize stream BEFORE starting the job to avoid callback race on first chunk
+          createStream(sandboxId, commandId, startedAt)
+
+          // Start the background job with streaming
+          // Note: E2B commands.run accepts a single shell string; we pass background and streaming callbacks
+          const cmdHandle = await (sandbox as any).commands.run(cmdLine, {
+            background: true,
+            onStdout: (data: any) => {
+              const text = typeof data === 'string' ? data : data?.text ?? ''
+              if (text) appendChunk(sandboxId, commandId, text, 'stdout')
+            },
+            onStderr: (data: any) => {
+              const text = typeof data === 'string' ? data : data?.text ?? ''
+              if (text) appendChunk(sandboxId, commandId, text, 'stderr')
+            },
+          })
+
+          // Attach kill handle after job starts
+          const streamRef = getStream(sandboxId, commandId)
+          if (streamRef) {
+            streamRef.handle = { kill: () => cmdHandle?.kill?.() }
+          }
+
           writer.write({
             id: toolCallId,
             type: 'data-run-command',
@@ -204,8 +174,26 @@ export const runCommand = ({ writer }: Params) =>
               command: normCommand,
               args: normArgs,
               status: 'running',
-              
             },
+          })
+
+          // Detach a watcher to finish stream with exit code when it ends
+          ;(async () => {
+            let exitCode: number | undefined = undefined
+            try {
+              // Try common result methods; ignore if not available
+              const res =
+                (await cmdHandle?.result?.()) ??
+                (await cmdHandle?.wait?.()) ??
+                undefined
+              exitCode = res?.exitCode ?? res?.code ?? exitCode
+            } catch {
+              // ignore
+            } finally {
+              finishStream(sandboxId, commandId, exitCode)
+            }
+          })().catch(() => {
+            // ignore detached watcher errors
           })
 
           return `The command \`${normCommand} ${normArgs.join(
@@ -213,65 +201,53 @@ export const runCommand = ({ writer }: Params) =>
           )}\` has been started in the background in the sandbox with ID \`${sandboxId}\` with the commandId ${commandId}.${bgSuffix}`
         }
 
+        // Foreground: stream while awaiting completion
+        const startedAt = Date.now()
+        const commandId = crypto.randomUUID()
+        createStream(sandboxId, commandId, startedAt)
+
         writer.write({
           id: toolCallId,
           type: 'data-run-command',
           data: {
             sandboxId,
+            commandId,
             command: normCommand,
             args: normArgs,
             status: 'waiting',
           },
         })
 
-        const py = buildForegroundPython(normCommand, normArgs, sudo)
-        const result = await (sandbox as any).runCode(py, { language: 'python' })
-        const parsed = parseRunCodeJSON(result)
+        const result = await (sandbox as any).commands.run(cmdLine, {
+          onStdout: (data: any) => {
+            const text = typeof data === 'string' ? data : data?.text ?? ''
+            if (text) appendChunk(sandboxId, commandId, text, 'stdout')
+          },
+          onStderr: (data: any) => {
+            const text = typeof data === 'string' ? data : data?.text ?? ''
+            if (text) appendChunk(sandboxId, commandId, text, 'stderr')
+          },
+        })
 
-        if (!parsed) {
-          const richError = getRichError({
-            action: 'parse command output',
-            args: { sandboxId, command: normCommand, args: normArgs },
-            error: new Error('Failed to parse foreground execution result'),
-          })
-
-          writer.write({
-            id: toolCallId,
-            type: 'data-run-command',
-            data: {
-              sandboxId,
-              command: normCommand,
-              args: normArgs,
-              error: richError.error,
-              status: 'error',
-            },
-          })
-
-          return richError.message
-        }
+        const exitCode: number = result?.exitCode ?? result?.code ?? 0
+        finishStream(sandboxId, commandId, exitCode)
 
         writer.write({
           id: toolCallId,
           type: 'data-run-command',
           data: {
             sandboxId,
-            commandId: String(parsed.exitCode),
+            commandId,
             command: normCommand,
             args: normArgs,
-            exitCode: parsed.exitCode,
+            exitCode,
             status: 'done',
           },
         })
 
-        return (
-          `The command \`${normCommand} ${normArgs.join(
-            ' '
-          )}\` has finished with exit code ${parsed.exitCode}.` +
-          `Stdout of the command was: \n` +
-          `\`\`\`\n${parsed.stdout}\n\`\`\`\n` +
-          `Stderr of the command was: \n` +
-          `\`\`\`\n${parsed.stderr}\n\`\`\``
-        )
+        return `The command \`${normCommand} ${normArgs.join(
+          ' '
+        )}\` has finished with exit code ${exitCode}.`
       } catch (error) {
         const richError = getRichError({
           action: 'run command in sandbox',
