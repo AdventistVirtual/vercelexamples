@@ -88,6 +88,40 @@ function normalizePackageManager(command: string, args: string[]) {
   }
   return out
 }
+
+/**
+ * Heuristics to detect commands that are likely long-running in an E2B sandbox
+ * and should NOT be executed in the foreground (wait: true).
+ *
+ * Examples:
+ * - npm install / npm ci
+ * - npm run dev / npm start / npm run start / npm run serve / npm run preview
+ * - npx next dev / npx vite dev / npx vercel dev
+ */
+function isPotentiallyLongRunning(command: string, args: string[]) {
+  const c = (command || '').toLowerCase()
+  const a0 = (args[0] || '').toLowerCase()
+  const a1 = (args[1] || '').toLowerCase()
+
+  const devAliases = new Set(['dev', 'start', 'serve', 'preview'])
+
+  if (c === 'npm' || c === 'yarn' || c === 'npx') {
+    // Installs are long-running and should be backgrounded
+    if (a0 === 'install' || a0 === 'ci') return true
+
+    // npm script runners
+    if (a0 === 'run' && devAliases.has(a1)) return true
+    if (devAliases.has(a0)) return true
+
+    // Common npx dev starters
+    if (c === 'npx') {
+      const starters = new Set(['next', 'vite', 'vercel'])
+      if (starters.has(a0) && devAliases.has(a1)) return true
+    }
+  }
+
+  return false
+}
  
 export const runCommand = ({ writer }: Params) =>
   tool({
@@ -122,6 +156,9 @@ export const runCommand = ({ writer }: Params) =>
       { toolCallId }
     ) => {
       const { command: normCommand, args: normArgs } = normalizePackageManager(command, args)
+      const forceBackground = isPotentiallyLongRunning(normCommand, normArgs)
+      const effectiveWait = forceBackground ? false : wait
+      const bgSuffix = forceBackground ? ' (forced to run in background due to long-running command)' : ''
       writer.write({
         id: toolCallId,
         type: 'data-run-command',
@@ -152,7 +189,7 @@ export const runCommand = ({ writer }: Params) =>
       }
 
       try {
-        if (!wait) {
+        if (!effectiveWait) {
           const py = buildBackgroundPython(normCommand, normArgs, sudo)
           const result = await (sandbox as any).runCode(py, { language: 'python' })
           const parsed = parseRunCodeJSON(result)
@@ -167,12 +204,13 @@ export const runCommand = ({ writer }: Params) =>
               command: normCommand,
               args: normArgs,
               status: 'running',
+              
             },
           })
 
           return `The command \`${normCommand} ${normArgs.join(
             ' '
-          )}\` has been started in the background in the sandbox with ID \`${sandboxId}\` with the commandId ${commandId}.`
+          )}\` has been started in the background in the sandbox with ID \`${sandboxId}\` with the commandId ${commandId}.${bgSuffix}`
         }
 
         writer.write({
