@@ -44,6 +44,29 @@ export const createSandbox = ({ writer }: Params) =>
           // E2B JS SDK: set sandbox timeout in milliseconds
           await Sandbox.setTimeout(sandbox.sandboxId, timeout)
         }
+
+        // Ensure ports are resolved at creation time.
+        // Default to exposing port 3000 if none provided.
+        const exposePorts = Array.isArray(ports) && ports.length > 0 ? ports.slice(0, 2) : [3000]
+        const portHosts: Record<number, string> = {}
+
+        for (const p of exposePorts) {
+          try {
+            const host = await sandbox.getHost(p)
+            portHosts[p] = `https://${host}`
+          } catch (_e) {
+            // ignore exposure errors; user can retry getSandboxURL later
+          }
+        }
+
+        const urlsSummary =
+          Object.keys(portHosts).length > 0
+            ? '\nURLs:\n' +
+              Object.entries(portHosts)
+                .map(([p, u]) => `  - Port ${p}: ${u}`)
+                .join('\n')
+            : ''
+
         // Register sandbox instance for later retrieval by ID
         registerSandbox(sandbox)
 
@@ -55,6 +78,8 @@ export const createSandbox = ({ writer }: Params) =>
 
         return (
           `Sandbox created with ID: ${sandbox.sandboxId}.` +
+          `\nPorts exposed: ${exposePorts.join(', ')}.` +
+          urlsSummary +
           `\nYou can now upload files, run commands, and access services on the exposed ports.`
         )
       } catch (error) {

@@ -104,6 +104,100 @@ function toShellString(cmd: string, args: string[], sudo?: boolean) {
   return parts.join(' ')
 }
 
+/**
+ * Ensure dev servers bind to 0.0.0.0:3000 in the sandbox.
+ * - For npm/yarn scripts: prepend env PORT=3000 HOST=0.0.0.0
+ * - For npx starters: add appropriate flags for next/vite/vercel
+ */
+function augmentDevCommandForSandbox(
+  command: string,
+  args: string[]
+): { preEnv: string; args: string[] } {
+  const c = (command || '').toLowerCase()
+  const a0 = (args[0] || '').toLowerCase()
+  const a1 = (args[1] || '').toLowerCase()
+
+  const outArgs = [...args]
+  let preEnv = ''
+
+  const hasPortArg =
+    outArgs.some((a) => a === '-p' || a.startsWith('--port') || a.startsWith('--port='))
+  const hasHostArg =
+    outArgs.some(
+      (a) =>
+        a === '-H' ||
+        a.startsWith('--host') ||
+        a.startsWith('--host=') ||
+        a.startsWith('--hostname') ||
+        a.startsWith('--hostname=')
+    )
+
+  const defaultPort = '3000'
+  const defaultHost = '0.0.0.0'
+
+  if (classifyCommandKind(command, args) === 'dev') {
+    if (c === 'npx') {
+      if (a0 === 'next' && a1 === 'dev') {
+        if (!hasPortArg) {
+          outArgs.push('--port', defaultPort)
+        }
+        if (!hasHostArg) {
+          outArgs.push('--hostname', defaultHost)
+        }
+      } else if (a0 === 'vite' && a1 === 'dev') {
+        if (!hasPortArg) {
+          outArgs.push('--port', defaultPort)
+        }
+        if (!hasHostArg) {
+          outArgs.push('--host', defaultHost)
+        }
+      } else if (a0 === 'vercel' && a1 === 'dev') {
+        if (!hasPortArg) {
+          outArgs.push('--port', defaultPort)
+        }
+      }
+    } else {
+      // npm/yarn scripts: set env vars commonly respected by frameworks
+      preEnv = `PORT=${defaultPort} HOST=${defaultHost}`
+
+      // Forward flags to underlying script so Next/Vite bind to correct interface/port
+      const hasDoubleDash = outArgs.includes('--')
+      if (!hasPortArg || !hasHostArg) {
+        if (!hasDoubleDash) {
+          outArgs.push('--')
+        }
+        if (!hasPortArg) {
+          outArgs.push('--port', defaultPort)
+        }
+        if (!hasHostArg) {
+          outArgs.push('--hostname', defaultHost)
+        }
+      }
+    }
+  }
+
+  return { preEnv, args: outArgs }
+}
+
+/* duplicate ensureWritableWorkspace removed */
+
+async function ensureWritableWorkspace(sandbox: any) {
+  // Attempt to fix permissions to allow Next.js to write configuration defaults
+  try {
+    await sandbox.commands.run('sudo chown -R user:user /home/user')
+  } catch {}
+  try {
+    await sandbox.commands.run('sudo chmod -R u+rwX /home/user')
+  } catch {}
+  // Fallback without sudo if sudo is unavailable
+  try {
+    await sandbox.commands.run('chown -R $(whoami):$(whoami) /home/user')
+  } catch {}
+  try {
+    await sandbox.commands.run('chmod -R u+rwX /home/user')
+  } catch {}
+}
+
 export const runCommand = ({ writer }: Params) =>
   tool({
     description,
@@ -137,15 +231,19 @@ export const runCommand = ({ writer }: Params) =>
       { toolCallId }
     ) => {
       const { command: normCommand, args: normArgs } = normalizePackageManager(command, args)
-      const forceBackground = isPotentiallyLongRunning(normCommand, normArgs)
+      const augmented = augmentDevCommandForSandbox(normCommand, normArgs)
+      const forceBackground = isPotentiallyLongRunning(normCommand, augmented.args)
       const effectiveWait = forceBackground ? false : wait
       const bgSuffix = forceBackground ? ' (forced to run in background due to long-running command)' : ''
-      const cmdLine = toShellString(normCommand, normArgs, sudo)
+      const cmdLine = [augmented.preEnv, toShellString(normCommand, augmented.args, sudo)]
+        .filter(Boolean)
+        .join(' ')
+        .trim()
 
       writer.write({
         id: toolCallId,
         type: 'data-run-command',
-        data: { sandboxId, command: normCommand, args: normArgs, status: 'executing' },
+        data: { sandboxId, command: normCommand, args: augmented.args, status: 'executing' },
       })
 
       const sandbox = getSandbox(sandboxId)
@@ -191,6 +289,11 @@ export const runCommand = ({ writer }: Params) =>
 
           // Start the background job with streaming
           // Note: E2B commands.run accepts a single shell string; we pass background and streaming callbacks
+          if (kind === 'dev') {
+            try {
+              await ensureWritableWorkspace(sandbox)
+            } catch {}
+          }
           const cmdHandle = await (sandbox as any).commands.run(cmdLine, {
             background: true,
             onStdout: (data: any) => {
@@ -216,7 +319,7 @@ export const runCommand = ({ writer }: Params) =>
               sandboxId,
               commandId,
               command: normCommand,
-              args: normArgs,
+              args: augmented.args,
               status: 'running',
             },
           })
@@ -258,7 +361,7 @@ export const runCommand = ({ writer }: Params) =>
             sandboxId,
             commandId,
             command: normCommand,
-            args: normArgs,
+            args: augmented.args,
             status: 'waiting',
           },
         })
@@ -269,6 +372,11 @@ export const runCommand = ({ writer }: Params) =>
             beginInstallGate(sandboxId, commandId)
           }
 
+        if (kind === 'dev') {
+          try {
+            await ensureWritableWorkspace(sandbox)
+          } catch {}
+        }
         const result = await (sandbox as any).commands.run(cmdLine, {
           onStdout: (data: any) => {
             const text = typeof data === 'string' ? data : data?.text ?? ''
@@ -290,7 +398,7 @@ export const runCommand = ({ writer }: Params) =>
             sandboxId,
             commandId,
             command: normCommand,
-            args: normArgs,
+            args: augmented.args,
             exitCode,
             status: 'done',
           },
@@ -311,8 +419,8 @@ export const runCommand = ({ writer }: Params) =>
           type: 'data-run-command',
           data: {
             sandboxId,
-            command,
-            args,
+            command: normCommand,
+            args: augmented.args,
             error: richError.error,
             status: 'error',
           },
