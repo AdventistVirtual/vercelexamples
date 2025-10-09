@@ -18,9 +18,8 @@ export async function GET(
   }
 
   try {
-    // Minimal check: run a tiny Python snippet. If it throws, sandbox is likely stopped.
     await (sandbox as any).runCode('print("sandbox status check")', { language: 'python' })
-    return NextResponse.json({ status: 'running' })
+    return NextResponse.json({ status: 'ok' })
   } catch (_error) {
     return NextResponse.json({ status: 'stopped' })
   }

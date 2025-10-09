@@ -2,7 +2,6 @@ import type { Components } from 'react-markdown'
 import { memo, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import rehypeRaw from 'rehype-raw'
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
@@ -87,7 +86,6 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeRaw]}
       components={components}
     >
       {content}

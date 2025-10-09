@@ -1,7 +1,11 @@
 // In-memory registry for E2B Sandbox instances
+// Persist across Next.js HMR / route module reloads by stashing on globalThis.
 import type { Sandbox as E2BSandbox } from '@e2b/code-interpreter'
 
-const registry = new Map<string, E2BSandbox>()
+const globalAny = globalThis as any
+const registry: Map<string, E2BSandbox> =
+  globalAny.__vibe_e2b_registry ?? new Map<string, E2BSandbox>()
+globalAny.__vibe_e2b_registry = registry
 
 export function registerSandbox(sandbox: E2BSandbox) {
   registry.set(sandbox.sandboxId, sandbox)
